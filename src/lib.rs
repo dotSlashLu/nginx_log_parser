@@ -1,12 +1,14 @@
-use std::fmt;
 //'$remote_addr - $remote_user [$time_local] '
 // '"$request" $status $body_bytes_sent '
 // '"$http_referer" "$http_user_agent" "$gzip_ratio"'
 
 // IDENTIFIER   := _a-z+
 // VAR          := $IDENTIFIER
-// STR          := \S+
-// CFG          := VAR | STR
+// STR          := .+?(?=$)
+// CFG          := STR?VAR STR...
+mod error;
+use error::ParseErr;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 enum CfgPart {
@@ -15,131 +17,106 @@ enum CfgPart {
 }
 
 #[derive(Debug)]
-pub struct Tokenizer {
-    field_cfg_str: String,
+pub struct Parser {
+    log_format: String,
     fields: Vec<CfgPart>,
 }
 
-#[derive(Debug)]
-pub struct TokErr {
-    reason: String,
-}
-
-impl From<std::string::FromUtf8Error> for TokErr {
-    fn from(error: std::string::FromUtf8Error) -> Self {
-        TokErr {
-            reason: String::from("malformed data"),
-        }
-    }
-}
-
-impl fmt::Display for TokErr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "tokenize error: {}", self.reason)
-    }
-}
-
-impl std::error::Error for TokErr {}
-
-impl Tokenizer {
-    pub fn tok<'a>(
-        self: &Self,
-        input: &'a str,
-    ) -> Result<std::collections::HashMap<String, &'a str>, TokErr> {
+impl Parser {
+    pub fn parse<'a>(self: &Self, input: &'a str) -> Result<HashMap<String, &'a str>, ParseErr> {
         dbg!(input);
         let ninput = input.len();
         let mut part_i = 0;
         let mut input_i = 0;
         let nparts = self.fields.len();
-        let mut res = std::collections::HashMap::<String, &'a str>::new();
+        let mut res = HashMap::<String, &'a str>::new();
+
         // remove first str
         if let CfgPart::Str { value } = &self.fields[part_i] {
+            let vlen = value.len();
+            if &input[..vlen] != value {
+                let reason = format!("should start with {}, got {}", value, &input[..vlen]);
+                return Err(ParseErr { reason });
+            }
             input_i += value.len();
             part_i += 1;
         }
-        loop {
-            if let CfgPart::Variable { name } = &self.fields[part_i] {
-                println!("a new var!!!");
-                // last part is a variable
-                if part_i + 1 == nparts {
-                    dbg!("var at last");
-                    let value = &input[input_i..];
-                    res.insert(name.clone(), value);
-                    break;
-                }
-                // read variable ending str
-                let next_str = &self.fields[part_i + 1];
-                let end_bytes = match next_str {
-                    CfgPart::Str { value } => {
-                        println!("str part {} of {}", part_i, nparts);
-                        part_i += 1;
-                        value
-                    }
-                    _ => {
-                        return Err(TokErr {
-                            reason: String::from("wrong sequence"),
-                        })
-                    }
-                };
-                let end_bytes_len = end_bytes.len();
-                let start_i = input_i;
-                let mut end_i = input_i;
-                loop {
-                    let vlen = end_i - start_i;
-                    if vlen >= end_bytes_len
-                    // && &input[start_i + vlen - end_bytes_len..start_i + vlen] == end_bytes
-                    {
-                        if &input[start_i + vlen - end_bytes_len..start_i + vlen] == end_bytes {
-                            println!("before subtracting, end_i: {}", end_i);
-                            end_i = end_i - end_bytes_len;
-                            println!("end_i: {}", end_i);
-                            break;
-                        }
-                        println!(
-                            "var tail: {}, str: {}",
-                            &input[start_i + vlen - end_bytes_len..start_i + vlen],
-                            end_bytes
-                        );
-                    }
-                    input_i += 1;
-                    end_i += 1;
-                    // EOL
-                    //  since we use slicing op and slicing op has an open upper bound
-                    //  so input_i is allowed to be equal to ninput
-                    if input_i == ninput + 1 {
-                        break;
-                    }
-                }
-                let value = &input[start_i..end_i];
-                println!("variable part {} of {}", part_i, nparts);
-                dbg!(value);
+        'part: while let CfgPart::Variable { name } = &self.fields[part_i] {
+            // last part is a variable
+            if part_i + 1 == nparts {
+                dbg!("var at last");
+                let value = &input[input_i..];
                 res.insert(name.clone(), value);
                 part_i += 1;
+                break;
             }
-            if part_i == nparts {
-                return Ok(res)
+            // read variable ending str
+            let next_str = &self.fields[part_i + 1];
+            let end_bytes = match next_str {
+                CfgPart::Str { value } => {
+                    part_i += 1;
+                    value
+                }
+                _ => {
+                    return Err(ParseErr {
+                        reason: String::from("wrong sequence"),
+                    })
+                }
+            };
+            let end_bytes_len = end_bytes.len();
+            let start_i = input_i;
+            let mut end_i = input_i;
+            loop {
+                let vlen = end_i - start_i;
+                if vlen >= end_bytes_len
+                    && &input[start_i + vlen - end_bytes_len..start_i + vlen] == end_bytes
+                {
+                    end_i = end_i - end_bytes_len;
+                    break;
+                }
+                // EOL
+                if input_i == ninput {
+                    let value = &input[start_i..end_i];
+                    println!("eol variable part {} of {}", part_i, nparts);
+                    res.insert(name.clone(), value);
+                    break 'part;
+                }
+                input_i += 1;
+                end_i += 1;
             }
-            if input_i > ninput + 1{
-                println!("parts {} input_i {}", part_i >= nparts, input_i > ninput + 1);
-                return Err(TokErr {
-                    reason: "boundary check failed, field mismatch?".to_owned(),
-                });
-            }
+            let value = &input[start_i..end_i];
+            res.insert(name.clone(), value);
+            part_i += 1;
         }
+        if part_i != nparts {
+            return Err(ParseErr {
+                reason: format!(
+                    "read {} fields, but parsed {} fields from configuration, field mismatch?",
+                    part_i, nparts
+                )
+                .to_owned(),
+            });
+        }
+        // if input_i != ninput + 1 {
+        //     return Err(ParseErr {
+        //         reason: "boundary check failed, field mismatch?".to_owned(),
+        //     });
+        // }
+
         Ok(res)
     }
 }
 
-pub fn new(field_cfg_str: String) -> Tokenizer {
-    Tokenizer {
-        field_cfg_str: field_cfg_str.clone(),
-        fields: parse_cfg_str(field_cfg_str),
+pub fn new(log_format: String) -> Parser {
+    Parser {
+        log_format: log_format.clone(),
+        fields: parse_cfg_str(log_format),
     }
 }
 
-fn parse_cfg_str(field_cfg_str: String) -> Vec<CfgPart> {
+fn parse_cfg_str(log_format: String) -> Vec<CfgPart> {
     let mut res = Vec::<CfgPart>::new();
-    let mut rest = field_cfg_str;
+    let mut rest = log_format;
     loop {
         let (optional_part, rest_tmp) = parse_cfg_str_part(rest);
         if let Some(part) = optional_part {
@@ -152,8 +129,8 @@ fn parse_cfg_str(field_cfg_str: String) -> Vec<CfgPart> {
     res
 }
 
-fn parse_cfg_str_part(cfg_str: String) -> (Option<CfgPart>, String) {
-    let mut chars = cfg_str.chars().peekable();
+fn parse_cfg_str_part(log_format: String) -> (Option<CfgPart>, String) {
+    let mut chars = log_format.chars().peekable();
     while let Some(&c) = chars.peek() {
         match c {
             '$' => {
@@ -205,17 +182,26 @@ fn parse_cfg_str_part(cfg_str: String) -> (Option<CfgPart>, String) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_tokenizer() {
+    fn test_parser() {
         use super::*;
-        let test_str: [&str; 2] = [
-            r#"123$remote_addr - $scheme [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$http_x_forwarded_for" "$host" "$upstream_addr" "$upstream_cache_status" $request_time $upstream_response_time"#,
-            r#"$remote_addr - $scheme [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$http_x_forwarded_for" "$host" "$upstream_addr" "$upstream_cache_status" $request_time $upstream_response_time zzz"#,
-        ];
-        for &cfg in test_str.iter() {
-            let tokenizer = new(cfg.to_owned());
-            println!("{:?}", tokenizer);
-            let res = tokenizer.tok(r#"123113.106.106.3 - http [04/Aug/2020:14:18:07 +0800] "GET /[%20%20%20%20%20%7B%20%20%20%20%20%20%20%20%20%22placement%22:%22com.mopub.nativeads.WpsEventNative%22,%20%20%20%20%20%20%20%20%20%22plugin%22:%22ad_wps%22,%20%20%20%20%20%20%20%20%20%22ad_type%22:%222%22,%20%20%20%20%20%20%20%20%20%22show_confirm_dialog%22:%222%22,%20%20%20%20%20%20%20%20%20%22logo_gravity%22:%22left_top%22%20%20%20%20%20%20%20%20%20%7D] HTTP/1.1" 404 857 "http://infostream-adm.wps.kingsoft.net/edit_card?type=edit&id=597&resourceId=1" "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Gecko/20100101 Firefox/78.0" "-" "infostream-adm.wps.kingsoft.net" "172.16.49.100:30755" "-" 0.075 0.075"#);
-            println!("{:?}", res);
+        let mut test_table = HashMap::<&str, Vec<&str>>::new();
+        test_table.insert(
+            r#"$remote_addr - $scheme [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$http_x_forwarded_for" "$host" "$upstream_addr" "$upstream_cache_status" $request_time $upstream_response_time"#,
+            vec![
+                r#"113.106.106.3 - http [04/Aug/2020:14:18:07 +0800] "GET /[%20%20%20%20%20%7B%20%20%20%20%20%20%20%20%20%22ploweufhwewefwef%22:%22com.pub.nativeads.EventNative%22,%20%20%20%20%20%20%20%20%20%22pluwfwefn%22:%22ad_%22,%20%20%20%20%20%20%20%20%20%22ad_type%22:%222%22,%20%20%20%20%20%20%20%20%20%22show_confirm_dialog%22:%222%22,%20%20%20%20%20%20%20%20%20%22logo_gravity%22:%22left_top%22%20%20%20%20%20%20%20%20%20%7D] HTTP/1.1" 404 857 "http://is.dafaq.losersoft.net/edit?type=edit&id=597&resourceId=1" "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Gecko/20100101 Firefox/78.0" "-" "losersoft.net" "172.16.49.100:30755" "-" 0.075 0.075"#,
+                r#"120.92.45.13 - http [06/Aug/2020:00:53:56 +0800] "HEAD / HTTP/1.0" 301 0 "-" "-" "100.67.95.34" "dafaq.cn" "-" "-" 0.000 -"#,
+                r#"49.112.65.214 - https [06/Aug/2020:00:53:56 +0800] "POST /sdk/app_stat HTTP/2.0" 200 0 "-" "Android-6.0.1 Version/12.6.1 Channel/cn00587" "-" "service.losersoft-service.com" "172.16.61.181:31002" "-" 0.002 0.002"#,
+                r#"2408:84e5:285:9286:944a:a5af:e2b4:fd4b - https [06/Aug/2020:00:55:20 +0800] "POST /op/poByVersion HTTP/2.0" 200 2345 "-" "Android-10 Version/12.6.1 Channel/cn00571" "-" "api.dafaq.cn" "172.16.61.145:30755" "-" 0.030 0.030"#,
+                r#"2408:84f3:5212:621d:ded5:d1b4:4743:b1df - https [06/Aug/2020:00:55:20 +0800] "GET /time HTTP/2.0" 200 10 "-" "okhttp/3.11.0" "-" "api.dafaq.cn" "172.16.61.147:30755" "-" 0.000 0.000"#,
+            ]
+        );
+        for (&schema, contents) in test_table.iter() {
+            let parser = new(schema.to_owned());
+            println!("{:?}", parser);
+            for content in contents {
+                let res = parser.parse(content);
+                println!("{:?}", res);
+            }
         }
     }
 }
