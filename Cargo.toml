@@ -1,5 +1,5 @@
 [package]
-name = "tokenizer"
+name = "nginx_log_parser"
 version = "0.1.0"
 authors = ["ZhangQiang <dotslash.lu@gmail.com>"]
 edition = "2018"
