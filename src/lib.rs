@@ -24,12 +24,12 @@ pub struct Parser {
 
 impl Parser {
     pub fn parse<'a>(self: &Self, input: &'a str) -> Result<HashMap<String, &'a str>, ParseErr> {
-        dbg!(input);
         let ninput = input.len();
-        let mut part_i = 0;
-        let mut input_i = 0;
         let nparts = self.fields.len();
         let mut res = HashMap::<String, &'a str>::new();
+
+        let mut part_i = 0;
+        let mut input_i = 0;
 
         // remove first str
         if let CfgPart::Str { value } = &self.fields[part_i] {
@@ -44,12 +44,12 @@ impl Parser {
         'part: while let CfgPart::Variable { name } = &self.fields[part_i] {
             // last part is a variable
             if part_i + 1 == nparts {
-                dbg!("var at last");
                 let value = &input[input_i..];
                 res.insert(name.clone(), value);
                 part_i += 1;
                 break;
             }
+
             // read variable ending str
             let next_str = &self.fields[part_i + 1];
             let end_bytes = match next_str {
@@ -63,9 +63,11 @@ impl Parser {
                     })
                 }
             };
+
             let end_bytes_len = end_bytes.len();
             let start_i = input_i;
             let mut end_i = input_i;
+            // read until ending str or EOL is reached
             loop {
                 let vlen = end_i - start_i;
                 if vlen >= end_bytes_len
@@ -77,7 +79,6 @@ impl Parser {
                 // EOL
                 if input_i == ninput {
                     let value = &input[start_i..end_i];
-                    println!("eol variable part {} of {}", part_i, nparts);
                     res.insert(name.clone(), value);
                     break 'part;
                 }
