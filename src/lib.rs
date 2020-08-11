@@ -23,6 +23,22 @@ pub struct Parser {
 }
 
 impl Parser {
+    // special parsing for request field,
+    // returns http method, path, http version
+    fn parse_request<'a>(
+        self: &Self,
+        request: &'a str,
+    ) -> Result<(&'a str, &'a str, &'a str), ParseErr> {
+        // POST /sdk/24332 HTTP/2.0
+        let split: Vec<&str> = request.split(' ').collect();
+        if split.len() != 3 {
+            return Err(ParseErr {
+                reason: "malformed $request field".to_owned(),
+            });
+        }
+        Ok((split[0], split[1], split[2]))
+    }
+
     pub fn parse<'a>(self: &Self, input: &'a str) -> Result<HashMap<String, &'a str>, ParseErr> {
         let ninput = input.len();
         let nparts = self.fields.len();
@@ -46,6 +62,12 @@ impl Parser {
             if part_i + 1 == nparts {
                 let value = &input[input_i..];
                 res.insert(name.clone(), value);
+                if name == "request" {
+                    let request_fields = self.parse_request(value)?;
+                    res.insert("_http_method".to_owned(), request_fields.0);
+                    res.insert("_path".to_owned(), request_fields.1);
+                    res.insert("_http_version".to_owned(), request_fields.2);
+                }
                 part_i += 1;
                 break;
             }
@@ -87,6 +109,13 @@ impl Parser {
             }
             let value = &input[start_i..end_i];
             res.insert(name.clone(), value);
+            if name == "request" {
+                let request_fields = self.parse_request(value)?;
+                res.insert("_http_method".to_owned(), request_fields.0);
+                res.insert("_path".to_owned(), request_fields.1);
+                res.insert("_http_version".to_owned(), request_fields.2);
+            }
+
             part_i += 1;
         }
         if part_i != nparts {
@@ -111,15 +140,15 @@ impl Parser {
 pub fn new(log_format: String) -> Parser {
     Parser {
         log_format: log_format.clone(),
-        fields: parse_cfg_str(log_format),
+        fields: parse_log_format(log_format),
     }
 }
 
-fn parse_cfg_str(log_format: String) -> Vec<CfgPart> {
+fn parse_log_format(log_format: String) -> Vec<CfgPart> {
     let mut res = Vec::<CfgPart>::new();
     let mut rest = log_format;
     loop {
-        let (optional_part, rest_tmp) = parse_cfg_str_part(rest);
+        let (optional_part, rest_tmp) = parse_log_format_part(rest);
         if let Some(part) = optional_part {
             res.push(part);
             rest = String::from(rest_tmp);
@@ -130,7 +159,7 @@ fn parse_cfg_str(log_format: String) -> Vec<CfgPart> {
     res
 }
 
-fn parse_cfg_str_part(log_format: String) -> (Option<CfgPart>, String) {
+fn parse_log_format_part(log_format: String) -> (Option<CfgPart>, String) {
     let mut chars = log_format.chars().peekable();
     while let Some(&c) = chars.peek() {
         match c {
@@ -189,11 +218,11 @@ mod tests {
         test_table.insert(
             r#"$remote_addr - $scheme [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$http_x_forwarded_for" "$host" "$upstream_addr" "$upstream_cache_status" $request_time $upstream_response_time"#,
             vec![
-                r#"113.106.106.3 - http [04/Aug/2020:14:18:07 +0800] "GET /[%20%20%20%20%20%7B%20%20%20%20%20%20%20%20%20%22ploweufhwewefwef%22:%22com.pub.nativeads.EventNative%22,%20%20%20%20%20%20%20%20%20%22pluwfwefn%22:%22ad_%22,%20%20%20%20%20%20%20%20%20%22ad_type%22:%222%22,%20%20%20%20%20%20%20%20%20%22show_confirm_dialog%22:%222%22,%20%20%20%20%20%20%20%20%20%22logo_gravity%22:%22left_top%22%20%20%20%20%20%20%20%20%20%7D] HTTP/1.1" 404 857 "http://is.dafaq.losersoft.net/edit?type=edit&id=597&resourceId=1" "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Gecko/20100101 Firefox/78.0" "-" "losersoft.net" "172.16.49.100:30755" "-" 0.075 0.075"#,
+                r#"113.106.106.3 - http [04/Aug/2020:14:18:07 +0800] "GET /[%20%20%20%20%20%7B%20%20%20%20%20%20%20%20%20%22ploweufhwewefwef%22:%22com.pub.nativeads.EventNative%22,%20%20%20%20%20%20%20%20%20%22pluwfwefn%22:%22ad_%22,%20%20%20%20%20%20%20%20%20%22ad_type%22:%222%22,%20%20%20%20%20%20%20%20%20%22show_confirm_dialog%22:%222%22,%20%20%20%20%20%20%20%20%20%22logo_gravity%22:%22left_top%22%20%20%20%20%20%20%20%20%20%7D] HTTP/1.1" 404 857 "http://is.dafaq.losersoft.net/edit?type=edit&id=597&resourceId=1" "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Gecko/20100101 Firefox/78.0" "-" "losersoft.net" "172.10.49.100:38283" "-" 0.075 0.075"#,
                 r#"120.92.45.13 - http [06/Aug/2020:00:53:56 +0800] "HEAD / HTTP/1.0" 301 0 "-" "-" "100.67.95.34" "dafaq.cn" "-" "-" 0.000 -"#,
-                r#"49.112.65.214 - https [06/Aug/2020:00:53:56 +0800] "POST /sdk/app_stat HTTP/2.0" 200 0 "-" "Android-6.0.1 Version/12.6.1 Channel/cn00587" "-" "service.losersoft-service.com" "172.16.61.181:31002" "-" 0.002 0.002"#,
-                r#"2408:84e5:285:9286:944a:a5af:e2b4:fd4b - https [06/Aug/2020:00:55:20 +0800] "POST /op/poByVersion HTTP/2.0" 200 2345 "-" "Android-10 Version/12.6.1 Channel/cn00571" "-" "api.dafaq.cn" "172.16.61.145:30755" "-" 0.030 0.030"#,
-                r#"2408:84f3:5212:621d:ded5:d1b4:4743:b1df - https [06/Aug/2020:00:55:20 +0800] "GET /time HTTP/2.0" 200 10 "-" "okhttp/3.11.0" "-" "api.dafaq.cn" "172.16.61.147:30755" "-" 0.000 0.000"#,
+                r#"49.112.65.214 - https [06/Aug/2020:00:53:56 +0800] "POST /sdk/23432 HTTP/2.0" 200 0 "-" "Android-6.0.1 Version/12.6.1 Chan/48394" "-" "service.losersoft-service.com" "172.48.61.181:31482" "-" 0.002 0.002"#,
+                r#"2408:84e5:285:9286:944a:a5af:e2b4:fd4b - https [06/Aug/2020:00:55:20 +0800] "POST /op/poByVersion HTTP/2.0" 200 2345 "-" "Android-10 Version/12.6.1 Chan/48349" "-" "api.dafaq.cn" "172.30.61.145:34822" "-" 0.030 0.030"#,
+                r#"2408:84f3:5212:621d:ded5:d1b4:4743:b1df - https [06/Aug/2020:00:55:20 +0800] "GET /time HTTP/2.0" 200 10 "-" "okhttp/3.11.0" "-" "api.dafaq.cn" "172.30.61.147:34928" "-" 0.000 0.000"#,
             ]
         );
         for (&schema, contents) in test_table.iter() {
