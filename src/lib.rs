@@ -6,7 +6,7 @@
 // VAR          := $IDENTIFIER
 // STR          := .+?(?=$)
 // CFG          := STR?VAR STR...
-mod error;
+pub mod error;
 use error::ParseErr;
 use std::collections::HashMap;
 
@@ -22,27 +22,41 @@ pub struct Parser {
     fields: Vec<CfgPart>,
 }
 
+#[derive(Debug)]
+pub struct Fields<'a, 'b>(HashMap<&'a str, &'b str>);
+
+impl<'a, 'b> Fields<'a, 'b> {
+    fn get(self: &Self, k: &'a str) -> Result<&'b str, ParseErr> {
+        match self.0.get(k) {
+            Some(v) => Ok(*v),
+            None => {
+                return Err(ParseErr::NoField {
+                    field: k.to_owned(),
+                })
+            }
+        }
+    }
+}
+
 impl Parser {
     // special parsing for request field,
     // returns http method, path, http version
-    fn parse_request<'a>(
-        self: &Self,
-        request: &'a str,
-    ) -> Result<(&'a str, &'a str, &'a str), ParseErr> {
+    fn parse_request<'a, 'b>(
+        self: &'a Self,
+        request: &'b str,
+    ) -> Result<(&'b str, &'b str, &'b str), ParseErr> {
         // POST /sdk/24332 HTTP/2.0
         let split: Vec<&str> = request.split(' ').collect();
         if split.len() != 3 {
-            return Err(ParseErr {
-                reason: "malformed $request field".to_owned(),
-            });
+            return Err(ParseErr::MalformedRequestField);
         }
         Ok((split[0], split[1], split[2]))
     }
 
-    pub fn parse<'a>(self: &Self, input: &'a str) -> Result<HashMap<String, &'a str>, ParseErr> {
+    pub fn parse<'a, 'b>(self: &'a Self, input: &'b str) -> Result<Fields<'a, 'b>, ParseErr> {
         let ninput = input.len();
         let nparts = self.fields.len();
-        let mut res = HashMap::<String, &'a str>::new();
+        let mut fields = HashMap::<&'a str, &'b str>::new();
 
         let mut part_i = 0;
         let mut input_i = 0;
@@ -51,8 +65,10 @@ impl Parser {
         if let CfgPart::Str { value } = &self.fields[part_i] {
             let vlen = value.len();
             if &input[..vlen] != value {
-                let reason = format!("should start with {}, got {}", value, &input[..vlen]);
-                return Err(ParseErr { reason });
+                return Err(ParseErr::WrongSequence {
+                    expected: value.to_owned(),
+                    actual: input[..vlen].to_owned(),
+                });
             }
             input_i += value.len();
             part_i += 1;
@@ -61,12 +77,12 @@ impl Parser {
             // last part is a variable
             if part_i + 1 == nparts {
                 let value = &input[input_i..];
-                res.insert(name.clone(), value);
+                fields.insert(name, value);
                 if name == "request" {
                     let request_fields = self.parse_request(value)?;
-                    res.insert("_http_method".to_owned(), request_fields.0);
-                    res.insert("_path".to_owned(), request_fields.1);
-                    res.insert("_http_version".to_owned(), request_fields.2);
+                    fields.insert("_http_method", request_fields.0);
+                    fields.insert("_path", request_fields.1);
+                    fields.insert("_http_version", request_fields.2);
                 }
                 part_i += 1;
                 break;
@@ -80,8 +96,9 @@ impl Parser {
                     value
                 }
                 _ => {
-                    return Err(ParseErr {
-                        reason: String::from("wrong sequence"),
+                    return Err(ParseErr::WrongSequence {
+                        expected: "a string".to_owned(),
+                        actual: "unknown".to_owned(),
                     })
                 }
             };
@@ -101,30 +118,27 @@ impl Parser {
                 // EOL
                 if input_i == ninput {
                     let value = &input[start_i..end_i];
-                    res.insert(name.clone(), value);
+                    fields.insert(name, value);
                     break 'part;
                 }
                 input_i += 1;
                 end_i += 1;
             }
             let value = &input[start_i..end_i];
-            res.insert(name.clone(), value);
+            fields.insert(name, value);
             if name == "request" {
                 let request_fields = self.parse_request(value)?;
-                res.insert("_http_method".to_owned(), request_fields.0);
-                res.insert("_path".to_owned(), request_fields.1);
-                res.insert("_http_version".to_owned(), request_fields.2);
+                fields.insert("_http_method", request_fields.0);
+                fields.insert("_path", request_fields.1);
+                fields.insert("_http_version", request_fields.2);
             }
 
             part_i += 1;
         }
         if part_i != nparts {
-            return Err(ParseErr {
-                reason: format!(
-                    "read {} fields, but parsed {} fields from configuration, field mismatch?",
-                    part_i, nparts
-                )
-                .to_owned(),
+            return Err(ParseErr::FieldMismatch {
+                expected: nparts,
+                actual: part_i,
             });
         }
         // if input_i != ninput + 1 {
@@ -133,7 +147,7 @@ impl Parser {
         //     });
         // }
 
-        Ok(res)
+        Ok(Fields(fields))
     }
 }
 
@@ -225,6 +239,8 @@ mod tests {
                 r#"2408:84f3:5212:621d:ded5:d1b4:4743:b1df - https [06/Aug/2020:00:55:20 +0800] "GET /time HTTP/2.0" 200 10 "-" "okhttp/3.11.0" "-" "api.dafaq.cn" "172.30.61.147:34928" "-" 0.000 0.000"#,
             ]
         );
+        test_table.insert(r#"abc$remote_addr"#, vec![r#"123"#]);
+        test_table.insert(r#"abc$remote_addr dfg"#, vec![r#"abc123"#]);
         for (&schema, contents) in test_table.iter() {
             let parser = new(schema.to_owned());
             println!("{:?}", parser);
