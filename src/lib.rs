@@ -26,7 +26,7 @@ pub struct Parser {
 pub struct Fields<'a, 'b>(HashMap<&'a str, &'b str>);
 
 impl<'a, 'b> Fields<'a, 'b> {
-    fn get(self: &Self, k: &'a str) -> Result<&'b str, ParseErr> {
+    pub fn get(self: &Self, k: &'a str) -> Result<&'b str, ParseErr> {
         match self.0.get(k) {
             Some(v) => Ok(*v),
             None => {
@@ -42,7 +42,7 @@ impl Parser {
     // special parsing for request field,
     // returns http method, path, http version
     fn parse_request<'a, 'b>(
-        self: &'a Self,
+        self: &Self,
         request: &'b str,
     ) -> Result<(&'b str, &'b str, &'b str), ParseErr> {
         // POST /sdk/24332 HTTP/2.0

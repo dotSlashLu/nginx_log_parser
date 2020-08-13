@@ -1,4 +1,4 @@
-use std::{fmt, string};
+use std::fmt;
 
 // 'a: log format, 'b: input
 #[derive(Debug)]
